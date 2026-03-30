@@ -1,0 +1,209 @@
+#include <LedControl.h>
+
+#define DIN 11
+#define CLK 13
+#define CS  10
+LedControl lc = LedControl(DIN, CLK, CS, 4);
+
+#define BTN_UP     2
+#define BTN_DOWN   3
+#define BTN_START  4
+
+#define LED_RUN 7
+#define LED_SET 6
+#define BUZZER  5
+
+unsigned long lastUpdate = 0;
+unsigned long buttonPressTime = 0;
+const unsigned long debounceDelay = 50;
+const unsigned long longPressDuration = 1000;
+
+bool colonState = true;
+bool buttonPressed = false;
+
+int initMinutes = 0;
+
+struct TimerData {
+  int minutes;
+  int seconds;
+  bool running;
+};
+
+TimerData timer;
+
+enum TimerMode {
+  MODE_SETTING,
+  MODE_RUNNING,
+  MODE_FINISH
+};
+
+TimerMode mode = MODE_SETTING;
+
+const byte digits[][8] = {
+  {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00},
+  {0x18,0x38,0x18,0x18,0x18,0x18,0x3C,0x00},
+  {0x3C,0x66,0x06,0x0C,0x30,0x60,0x7E,0x00},
+  {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00},
+  {0x0C,0x1C,0x2C,0x4C,0x7E,0x0C,0x0C,0x00},
+  {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00},
+  {0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0x00},
+  {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00},
+  {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00},
+  {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00}
+};
+
+byte reverseByte(byte b) {
+  b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+  b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+  b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+2  return b;
+}
+
+void setup() {
+  for (int i = 0; i < 4; i++) {
+    lc.shutdown(i, false);
+    lc.setIntensity(i, 8);
+    lc.clearDisplay(i);
+  }
+
+  pinMode(BTN_UP, INPUT_PULLUP);
+  pinMode(BTN_DOWN, INPUT_PULLUP);
+  pinMode(BTN_START, INPUT_PULLUP);
+
+  pinMode(LED_RUN, OUTPUT);
+  pinMode(LED_SET, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+
+  timer.minutes = 0;
+  timer.seconds = 0;
+  timer.running = false;
+
+  digitalWrite(LED_SET, HIGH);
+  updateDisplay();
+}
+
+void loop() {
+  handleButtons();
+
+  switch (mode) {
+    case MODE_SETTING:
+      digitalWrite(LED_SET, HIGH);
+      digitalWrite(LED_RUN, LOW);
+      break;
+
+    case MODE_RUNNING:
+      digitalWrite(LED_RUN, HIGH);
+      digitalWrite(LED_SET, LOW);
+      runTimer();
+      break;
+
+    case MODE_FINISH:
+      playTune();
+      flashLED(LED_RUN, 5);
+      mode = MODE_SETTING;
+      timer.minutes = initMinutes;
+      timer.seconds = 0;
+      break;
+  }
+}
+
+void runTimer() {
+  if (millis() - lastUpdate >= 1000) {
+    lastUpdate = millis();
+
+    if (timer.seconds == 0) {
+      if (timer.minutes > 0) {
+        timer.minutes--;
+        timer.seconds = 59;
+      } else {
+        mode = MODE_FINISH;
+        timer.running = false;
+        return;
+      }
+    } else {
+      timer.seconds--;
+    }
+
+    colonState = !colonState;
+    updateDisplay();
+  }
+}
+
+void handleButtons() {
+  static bool lastStart = HIGH;
+  bool currentStart = digitalRead(BTN_START);
+  unsigned long now = millis();
+
+  if (lastStart == HIGH && currentStart == LOW) {
+    buttonPressTime = now;
+    buttonPressed = true;
+  }
+
+  if (lastStart == LOW && currentStart == HIGH && buttonPressed) {
+    unsigned long pressDuration = now - buttonPressTime;
+
+    if (pressDuration >= longPressDuration) {
+      mode = MODE_SETTING;
+      timer.minutes = initMinutes;
+      timer.seconds = 0;
+    } else {
+      if (mode == MODE_SETTING && timer.minutes > 0) {
+        mode = MODE_RUNNING;
+        lastUpdate = now;
+      } else if (mode == MODE_RUNNING) {
+        mode = MODE_SETTING;
+      }
+    }
+    buttonPressed = false;
+  }
+  lastStart = currentStart;
+
+  if (digitalRead(BTN_UP) == LOW && mode == MODE_SETTING) {
+    delay(debounceDelay);
+    timer.minutes = min(timer.minutes + 1, 99);
+    initMinutes = timer.minutes;
+    updateDisplay();
+    delay(200);
+  }
+
+  if (digitalRead(BTN_DOWN) == LOW && mode == MODE_SETTING) {
+    delay(debounceDelay);
+    if (timer.minutes > 0) timer.minutes--;
+    initMinutes = timer.minutes;
+    updateDisplay();
+    delay(200);
+  }
+}
+
+void updateDisplay() {
+  int d[4] = {
+    timer.minutes / 10,
+    timer.minutes % 10,
+    timer.seconds / 10,
+    timer.seconds % 10
+  };
+
+  for (int row = 0; row < 8; row++) {
+    for (int i = 0; i < 4; i++) {
+      byte val = reverseByte(digits[d[i]][row]);
+      lc.setRow(3 - i, row, val);
+    }
+  }
+}
+
+void flashLED(int pin, int times) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(pin, HIGH);
+    delay(200);
+    digitalWrite(pin, LOW);
+    delay(200);
+  }
+}
+
+void playTune() {
+  int melody[] = {1000, 1500, 2000};
+  for (int i = 0; i < 3; i++) {
+    tone(BUZZER, melody[i], 200);
+    delay(300);
+  }
+}
